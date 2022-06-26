@@ -1,63 +1,44 @@
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.linear_model import LogisticRegression
 import pandas as pd
 import numpy as np
 
 
-# TODO: add method to validate bins
-def validate_number_of_bins(dataframe, feature, target):
-    # lg.intercept_ should equal to (np.log(distr_good / distr_bad))
-    df = dataframe.copy(deep=True)
-    X = df[feature].to_numpy().reshape(-1, 1)
-    y = df[target]
-    lg = LogisticRegression()
-    lg.fit(X, y)
-    ...
-    # lg = LogisticRegression()
-    # lg.fit(X, df_train[target])
-    # distr_good = woe.Good.sum() / woe.All.sum()
-    # distr_bad = woe.Bad.sum() /  woe.All.sum()
-    # value = np.log(distr_good / distr_bad)
-    # print(lg.intercept_, value)
-    # if round(lg.intercept_, 3) == round(value, 3):
-    # passed
-    # else:
-    # failed
-
-
-# TODO add report, add drop=True (for dropping insufficient columns),
+# TODO: add report method (features with their respective information value score)
 class WoEncoder(BaseEstimator, TransformerMixin):
     """
-    Creates WoE a scheme for a dataframe:
-    {
-    'continuous_scheme':
+    Column Transformer using Scikit-Learn interface. Weight of Evidence transformer which is compatible with
+    Scikit-Learn pipeline. It could handle both continuous and categorical variables but not at the same time.
+    Transformer creates WoE a scheme for a dataframe:
+    e.g.
         {
-        'feature_1':
+        'continuous_scheme':
             {
-            'group_1': {
-                'members': {
-                    'bin_1': 0.23,
-                    'bin_2': 0.25
-                            },
-                'woe_mean': 0.24
+            'feature_1':
+                {
+                'group_1': {
+                    'members': {
+                        'bin_1': 0.23,
+                        'bin_2': 0.25
+                                },
+                    'woe_mean': 0.24
+                },
+                'group_2': {
+                    'members': {
+                        'bin_3': 0.035,
+                        'bin_4': 0.036
+                                },
+                    'woe_mean': 0.037
+                    }
+                },
+            'feature_2':{...}
             },
-            'group_2': {
-                'members': {
-                    'bin_3': 0.035,
-                    'bin_4': 0.036
-                            },
-                'woe_mean': 0.037
-                }
-            },
-        'feature_2':{...}
-        },
-    'categorical_scheme':
-        {
-        ...
+        'categorical_scheme':
+            {
+            ...
+            }
         }
-    }
 
-    :param is_continuous: bool, Continuous features of the dataframe to be binned
+    :param is_continuous: bool, True if features that are passed continuous, False if categorical
     :param smoothing_alpha: float, minimum percent of data points each bin should represent, defaults to 0.05 (%5).
                             Applied only on continuous features
     :param coarse_alpha: float, threshold within which WoE values for neighbouring bins should be coarsed
@@ -109,7 +90,8 @@ class WoEncoder(BaseEstimator, TransformerMixin):
         dataframe[feature] = dataframe[feature].astype(str)
         return dataframe
 
-    def calculate_woe_iv(self, dataframe, feature: str):
+    @staticmethod
+    def calculate_woe_iv(dataframe, feature: str):
         """
         Calculates Weight of Evidence and Information Value for passed categorical feature.
         :param dataframe: pandas.DataFrame
@@ -259,10 +241,10 @@ class WoEncoder(BaseEstimator, TransformerMixin):
         for feature in dataframe:
             if feature == 'target':
                 continue
-            q = self.get_optimal_number_of_bins(dataframe, feature)                 # optimal number of bins
-            df = self.bin_feature(dataframe, feature, q)                            # transforming continuous feature
-            woe, iv = self.calculate_woe_iv(df, feature)                            # calculating WoE, IV for feature
-            if self.iv_is_sufficient(iv):                                           # check for IV sufficiency
+            q = self.get_optimal_number_of_bins(dataframe, feature)             # optimal number of bins
+            df = self.bin_feature(dataframe, feature, q)                        # transforming continuous feature
+            woe, iv = self.calculate_woe_iv(df, feature)                        # calculating WoE, IV for feature
+            if self.iv_is_sufficient(iv):                                       # check for IV sufficiency
                 woes_dict = {k: v for k, v in zip(woe['bin_name'].tolist(), woe['WoE'].tolist())}
                 groups = self.coarse_grouper(woes_dict)                         # getting groups for bins to be coarsed
                 feature_scheme = self.get_woe_feature_scheme(groups, woe)       # scheme for the feature
@@ -291,9 +273,20 @@ class WoEncoder(BaseEstimator, TransformerMixin):
                 self.insufficient_features.append(feature)
         return categorical_woes_scheme
 
-    def fit(self, X, y=None):
+    def drop_insufficient_features(self, X: pd.DataFrame):
         """
-        Creates a scheme for passed variables
+        If drop_insufficient_iv=True, drops such columns.
+        :param X: pd.DataFrame
+        :return: pd.DataFrame
+        """
+        if self.drop_insufficient_iv:
+            X.drop(self.insufficient_features, axis=1, inplace=True)
+        else:
+            print(f'{self.insufficient_features} are not dropped!')
+
+    def fit(self, X: pd.DataFrame, y=None):
+        """
+        Creates a scheme for passed variables, Scikit-Learn interface
         :param X: pd.Dataframe, independent variables
         :param y: pd.Series, dependent variables
         :return: dict, scheme
@@ -314,7 +307,25 @@ class WoEncoder(BaseEstimator, TransformerMixin):
             self.interpreted_scheme = self.interpret_scheme()
         return self
 
+    def transform(self, X, y=None):
+        """
+        Transforms dataframe based on WoE encoding. Scikit-Learn interface.
+        :param X: pd.DataFrame, independent variables
+        :param y: pd.Series, target variable
+        :return: pd.DataFrame
+        """
+        X = pd.DataFrame(X)
+        self.drop_insufficient_features(X)
+        X = self.bin_dataframe(X)
+        X = X.replace(self.interpreted_scheme)
+        return X
+
     def bin_dataframe(self, X):
+        """
+        If dataframe is continuous, features will be binned when called transformed. Uses interpreted scheme as the map.
+        :param X: pd.DataFrame, independent variables
+        :return: pd.DataFrame
+        """
         if self.is_continuous:
             X = X.copy(deep=True)
             for feature, bins in self.bin_scheme.items():
@@ -322,45 +333,13 @@ class WoEncoder(BaseEstimator, TransformerMixin):
             return X
         return X
 
-    def drop_insufficient_features(self, X: pd.DataFrame):
-        if self.drop_insufficient_iv:
-            X.drop(self.insufficient_features, axis=1, inplace=True)
-        else:
-            print(f'{self.insufficient_features} are not dropped!')
-
-    def transform(self, X, y=None):
-        X = pd.DataFrame(X)
-        self.drop_insufficient_features(X)
-        X = self.bin_dataframe(X)
-        X = X.replace(self.interpreted_scheme)
-        return X
-
-    def scheme_interpreter(self):
-        """Interprets WoE scheme"""
-        interpreted = dict()
-        scheme_type = 'continuous_scheme' if self.is_continuous else 'categorical_scheme'
-        for feature_name, feature_info in self.scheme[scheme_type].items():
-            interpreted[feature_name] = {}
-            for group_name, group_info in feature_info.items():
-                for member in group_info.get('members'):
-                    interpreted[feature_name][member] = group_info.get('group_woe_mean', np.nan)
-        return interpreted
-
-    @staticmethod
-    def continuous_scheme_interpreter(converted_scheme):
-        """converts keys to pandas.Interval for continuous scheme"""
-        interpreted = dict()
-        for feature, feature_info in converted_scheme.items():
-            interpreted[feature] = {}
-            for key, value in feature_info.items():
-                start, end = map(lambda interval: float(interval), key[1:-1].split(','))
-                new_key = pd.Interval(start, end)
-                interpreted[feature][new_key] = value
-        return interpreted
-
     @staticmethod
     def creating_bins(feature_scheme):
-        """ creates bins for pandas.cut()"""
+        """
+        Creates bins for pandas.cut()
+        :param feature_scheme: dict
+        :return: list, of tuples with pd.Intervals
+        """
         tuples = [(interval.left, interval.right) for interval in feature_scheme]
         set_ = set()
         for item in tuples:
@@ -370,7 +349,11 @@ class WoEncoder(BaseEstimator, TransformerMixin):
         return bins
 
     def create_bin_scheme(self, adjusted_scheme):
-        """creates bin schemes for continuous features"""
+        """
+        Creates bin schemes for continuous features
+        :param adjusted_scheme:
+        :return: dict
+        """
         bin_scheme = dict()
         for feature in adjusted_scheme:
             bins = self.creating_bins(adjusted_scheme[feature])
@@ -381,7 +364,9 @@ class WoEncoder(BaseEstimator, TransformerMixin):
     def adjust_bin_edges(cont_scheme):
         """
         Adjusts the most left and right boundaries to inf, -inf because training data might not have the most extreme
-        data points.
+        data point
+        :param cont_scheme: dict, continuous scheme
+        :return dict
         """
         adjusted_edges = dict()
         for feature in cont_scheme:
@@ -393,8 +378,42 @@ class WoEncoder(BaseEstimator, TransformerMixin):
             adjusted_edges[feature] = asc_dict
         return adjusted_edges
 
+    @staticmethod
+    def continuous_scheme_interpreter(converted_scheme):
+        """
+        Converts keys to pandas.Interval for continuous scheme
+        :param converted_scheme: dict, interpreted scheme
+        :return: dict, with keys as pandas.Intervals and values as WoE
+        """
+        interpreted = dict()
+        for feature, feature_info in converted_scheme.items():
+            interpreted[feature] = {}
+            for key, value in feature_info.items():
+                start, end = map(lambda interval: float(interval), key[1:-1].split(','))
+                new_key = pd.Interval(start, end)
+                interpreted[feature][new_key] = value
+        return interpreted
+
+    def scheme_reader(self):
+        """
+        Scheme reader
+        :return: dict
+        """
+        interpreted = dict()
+        scheme_type = 'continuous_scheme' if self.is_continuous else 'categorical_scheme'
+        for feature_name, feature_info in self.scheme[scheme_type].items():
+            interpreted[feature_name] = {}
+            for group_name, group_info in feature_info.items():
+                for member in group_info.get('members'):
+                    interpreted[feature_name][member] = group_info.get('group_woe_mean', np.nan)
+        return interpreted
+
     def interpret_scheme(self):
-        converted_scheme = self.scheme_interpreter()
+        """
+        Interprets WoE scheme
+        :return: dict
+        """
+        converted_scheme = self.scheme_reader()
         if self.is_continuous:
             continuous_scheme = self.continuous_scheme_interpreter(converted_scheme)
             adjusted_continuous_scheme = self.adjust_bin_edges(continuous_scheme)
