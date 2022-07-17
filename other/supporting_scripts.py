@@ -46,3 +46,4 @@ def ohe_leave_nan(dataframe, features, drop=None):
         # inserting nan values back at their initial indices
         encoded_df.loc[indices, dummy_columns] = np.nan
     return encoded_df
+
